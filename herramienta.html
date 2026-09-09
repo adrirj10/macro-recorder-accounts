@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generador y Copiador</title>
+    <style>
+        /* Diseño moderno y minimalista */
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f2f5;
+            margin: 0;
+        }
+        .tarjeta {
+            background: white;
+            padding: 2.5rem;
+            border-radius: 16px;
+            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        input[type="text"] {
+            font-size: 3rem;
+            text-align: center;
+            padding: 1rem;
+            width: 200px;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            background-color: #f8fafc;
+            color: #1e293b;
+            font-weight: 800;
+            margin-bottom: 2rem;
+            outline: none;
+        }
+        .botones {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+        }
+        button {
+            font-size: 1.2rem;
+            padding: 0.8rem 2rem;
+            cursor: pointer;
+            border: none;
+            border-radius: 10px;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+        button:active {
+            transform: scale(0.95);
+        }
+        #btnMas {
+            background-color: #3b82f6;
+            color: white;
+            font-size: 1.5rem;
+            width: 80px;
+        }
+        #btnMas:hover { background-color: #2563eb; }
+        
+        #btnCopiar {
+            background-color: #10b981;
+            color: white;
+            flex-grow: 1;
+        }
+        #btnCopiar:hover { background-color: #059669; }
+        
+        /* Notificación flotante de "Copiado" */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            background: #1e293b;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 50px;
+            font-size: 1rem;
+            font-weight: 500;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+            pointer-events: none;
+        }
+        .toast.mostrar {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="tarjeta">
+        <input type="text" id="pantalla" value="y003" readonly>
+        <div class="botones">
+            <button id="btnMas">+</button>
+            <button id="btnCopiar">Copiar</button>
+        </div>
+    </div>
+
+    <div id="toast" class="toast">¡Copiado al portapapeles! 📋</div>
+
+    <script>
+        // --- LA LÓGICA DE LA HERRAMIENTA ---
+        let numeroActual = 3;
+        const pantalla = document.getElementById('pantalla');
+        const btnMas = document.getElementById('btnMas');
+        const btnCopiar = document.getElementById('btnCopiar');
+        const toast = document.getElementById('toast');
+
+        // Botón +
+        btnMas.addEventListener('click', () => {
+            numeroActual++;
+            // Formatea el número para que siempre tenga 3 dígitos (004, 015, 100...)
+            const numeroFormateado = String(numeroActual).padStart(3, '0');
+            pantalla.value = 'y' + numeroFormateado;
+        });
+
+        // Botón Copiar
+        btnCopiar.addEventListener('click', () => {
+            // Usamos la API del portapapeles del navegador
+            navigator.clipboard.writeText(pantalla.value).then(() => {
+                // Animación del mensaje de éxito
+                toast.classList.add('mostrar');
+                setTimeout(() => {
+                    toast.classList.remove('mostrar');
+                }, 2000);
+            });
+        });
+    </script>
+
+</body>
+</html>
