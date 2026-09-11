@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QCheckBox, QSpinBox, QDoubleSpinBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QGroupBox,
-    QFrame, QSlider, QSplitter, QStyle
+    QFrame, QSlider, QSplitter, QStyle, QTabWidget
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QColor, QIcon, QKeySequence
@@ -34,26 +34,53 @@ def activar_dpi_awareness():
 
 activar_dpi_awareness()
 
+# --- HELPER SONIDO DE ALERTA ---
+def reproducir_sonido_alerta():
+    def _beep():
+        try:
+            import winsound
+            winsound.Beep(1000, 400)  # 1000 Hz, 400 ms
+        except Exception:
+            try:
+                QApplication.beep()
+            except Exception:
+                pass
+    threading.Thread(target=_beep, daemon=True).start()
+
 # --- CLASE HILO DE REPRODUCCIÓN (PLAYBACK) ---
 class HiloReproduccion(QThread):
     progreso_iteracion = pyqtSignal(int, int) # (iteracion_actual, total_iteraciones)
     accion_ejecutada = pyqtSignal(int, int)   # (indice_accion, total_acciones)
+    cambio_macro_ejecutando = pyqtSignal(str, int) # (nombre_macro, iteracion)
     estado_cambiado = pyqtSignal(str)
+    intervencion_requerida = pyqtSignal(str)  # (nombre_macro)
+    intervencion_reanudada = pyqtSignal()
     finalizado = pyqtSignal()
 
-    def __init__(self, acciones: List[Dict[str, Any]], infinitas: bool, max_iteraciones: int, retardo_bucle: float, velocidad: float):
+    def __init__(self, acciones_macro1: List[Dict[str, Any]], acciones_macro2: List[Dict[str, Any]],
+                 frecuencia_macro2: int, infinitas: bool, max_iteraciones: int,
+                 retardo_bucle: float, velocidad: float):
         super().__init__()
-        self.acciones = acciones
+        self.acciones_macro1 = acciones_macro1
+        self.acciones_macro2 = acciones_macro2
+        self.frecuencia_macro2 = max(1, frecuencia_macro2)
         self.infinitas = infinitas
         self.max_iteraciones = max_iteraciones
         self.retardo_bucle = retardo_bucle
         self.velocidad = max(0.01, velocidad)
         self.solicitante_parada = False
+        self.esperando_intervencion = False
         self.mouse_controller = mouse.Controller()
         self.keyboard_controller = keyboard.Controller()
 
     def detener(self):
         self.solicitante_parada = True
+        self.esperando_intervencion = False
+
+    def reanudar_intervencion(self):
+        if self.esperando_intervencion:
+            self.esperando_intervencion = False
+            self.intervencion_reanudada.emit()
 
     def _convertir_tecla(self, key_str: str):
         if key_str.startswith("Key."):
@@ -68,72 +95,91 @@ class HiloReproduccion(QThread):
                 pass
         return key_str
 
+    def _ejecutar_secuencia(self, acciones: List[Dict[str, Any]], nombre_macro: str):
+        total_acciones = len(acciones)
+        for idx, acc in enumerate(acciones):
+            if self.solicitante_parada:
+                break
+
+            self.accion_ejecutada.emit(idx + 1, total_acciones)
+
+            # Respetar retardo de la acción adaptado a la velocidad
+            delay = acc.get("delay", 0.0) / self.velocidad
+            if delay > 0:
+                tiempo_fin = time.perf_counter() + delay
+                while time.perf_counter() < tiempo_fin:
+                    if self.solicitante_parada:
+                        break
+                    time.sleep(min(0.005, max(0.0, tiempo_fin - time.perf_counter())))
+
+            if self.solicitante_parada:
+                break
+
+            # Ejecución Pixel-Perfect de la Acción
+            tipo = acc.get("tipo")
+            try:
+                if tipo == "pause_point":
+                    self.esperando_intervencion = True
+                    self.intervencion_requerida.emit(nombre_macro)
+                    reproducir_sonido_alerta()
+                    while self.esperando_intervencion and not self.solicitante_parada:
+                        time.sleep(0.05)
+                elif tipo == "mouse_move":
+                    self.mouse_controller.position = (acc["x"], acc["y"])
+                elif tipo == "mouse_click":
+                    self.mouse_controller.position = (acc["x"], acc["y"])
+                    btn_name = acc.get("button", "left")
+                    btn = mouse.Button.left
+                    if btn_name == "right":
+                        btn = mouse.Button.right
+                    elif btn_name == "middle":
+                        btn = mouse.Button.middle
+                    
+                    if acc.get("pressed", True):
+                        self.mouse_controller.press(btn)
+                    else:
+                        self.mouse_controller.release(btn)
+                elif tipo == "mouse_scroll":
+                    self.mouse_controller.position = (acc["x"], acc["y"])
+                    self.mouse_controller.scroll(acc.get("dx", 0), acc.get("dy", 0))
+                elif tipo == "key_press":
+                    k = self._convertir_tecla(acc["key"])
+                    self.keyboard_controller.press(k)
+                elif tipo == "key_release":
+                    k = self._convertir_tecla(acc["key"])
+                    self.keyboard_controller.release(k)
+            except Exception as e:
+                print(f"Error al reproducir acción {idx} de {nombre_macro}: {e}")
+
     def run(self):
-        if not self.acciones:
+        if not self.acciones_macro1 and not self.acciones_macro2:
             self.finalizado.emit()
             return
 
-        iteracion = 0
-        total_acciones = len(self.acciones)
+        iteracion_m1 = 0
+        iteracion_m2 = 0
 
         while not self.solicitante_parada:
-            iteracion += 1
-            if not self.infinitas and iteracion > self.max_iteraciones:
+            # 1. Ejecutar 1 iteración de Macro 1 (si tiene acciones)
+            if self.acciones_macro1:
+                iteracion_m1 += 1
+                if not self.infinitas and iteracion_m1 > self.max_iteraciones:
+                    break
+                
+                self.cambio_macro_ejecutando.emit("Macro 1 (F8)", iteracion_m1)
+                self._ejecutar_secuencia(self.acciones_macro1, "Macro 1")
+
+            if self.solicitante_parada:
                 break
 
-            self.progreso_iteracion.emit(iteracion, 0 if self.infinitas else self.max_iteraciones)
-            
-            for idx, acc in enumerate(self.acciones):
-                if self.solicitante_parada:
-                    break
-
-                self.accion_ejecutada.emit(idx + 1, total_acciones)
-
-                # Respetar retardo de la acción adaptado a la velocidad
-                delay = acc.get("delay", 0.0) / self.velocidad
-                if delay > 0:
-                    # Dormir en micro-intervalos para respuesta instantánea de parada
-                    tiempo_fin = time.perf_counter() + delay
-                    while time.perf_counter() < tiempo_fin:
-                        if self.solicitante_parada:
-                            break
-                        time.sleep(min(0.005, max(0.0, tiempo_fin - time.perf_counter())))
-
-                if self.solicitante_parada:
-                    break
-
-                # Ejecución Pixel-Perfect de la Acción
-                tipo = acc.get("tipo")
-                try:
-                    if tipo == "mouse_move":
-                        self.mouse_controller.position = (acc["x"], acc["y"])
-                    elif tipo == "mouse_click":
-                        self.mouse_controller.position = (acc["x"], acc["y"])
-                        btn_name = acc.get("button", "left")
-                        btn = mouse.Button.left
-                        if btn_name == "right":
-                            btn = mouse.Button.right
-                        elif btn_name == "middle":
-                            btn = mouse.Button.middle
-                        
-                        if acc.get("pressed", True):
-                            self.mouse_controller.press(btn)
-                        else:
-                            self.mouse_controller.release(btn)
-                    elif tipo == "mouse_scroll":
-                        self.mouse_controller.position = (acc["x"], acc["y"])
-                        self.mouse_controller.scroll(acc.get("dx", 0), acc.get("dy", 0))
-                    elif tipo == "key_press":
-                        k = self._convertir_tecla(acc["key"])
-                        self.keyboard_controller.press(k)
-                    elif tipo == "key_release":
-                        k = self._convertir_tecla(acc["key"])
-                        self.keyboard_controller.release(k)
-                except Exception as e:
-                    print(f"Error al reproducir acción {idx}: {e}")
+            # 2. Tras N iteraciones completadas de Macro 1, ejecutar 1 iteración de Macro 2
+            if self.acciones_macro2 and iteracion_m1 > 0 and (iteracion_m1 % self.frecuencia_macro2 == 0):
+                iteracion_m2 += 1
+                self.cambio_macro_ejecutando.emit("Macro 2 (F1)", iteracion_m2)
+                self._ejecutar_secuencia(self.acciones_macro2, "Macro 2")
 
             # Retardo entre bucles
-            if not self.solicitante_parada and (self.infinitas or iteracion < self.max_iteraciones):
+            if not self.solicitante_parada and (self.infinitas or iteracion_m1 < self.max_iteraciones):
                 if self.retardo_bucle > 0:
                     tiempo_fin = time.perf_counter() + self.retardo_bucle
                     while time.perf_counter() < tiempo_fin:
@@ -150,13 +196,15 @@ class GrabadorMacrosApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Grabador de Acciones Ratón y Teclado | Pixel-Perfect & Bucle Infinito")
-        self.resize(1000, 700)
-        self.setMinimumSize(850, 550)
+        self.setWindowTitle("Grabador Dual de Macros Pixel-Perfect | F8 (M1) & F1 (M2)")
+        self.resize(1050, 720)
+        self.setMinimumSize(900, 580)
 
-        # Estado de la macro
-        self.acciones: List[Dict[str, Any]] = []
-        self.grabando = False
+        # Estado de las macros
+        self.acciones_macro1: List[Dict[str, Any]] = []
+        self.acciones_macro2: List[Dict[str, Any]] = []
+        self.grabando_macro = 0  # 0: No, 1: Macro 1 (F8), 2: Macro 2 (F1)
+        self.grabacion_pausada = False
         self.reproduciendo = False
         self.ultimo_tiempo = 0.0
 
@@ -205,7 +253,7 @@ class GrabadorMacrosApp(QMainWindow):
                 background-color: #334155;
                 color: #ffffff;
                 border: none;
-                padding: 10px 18px;
+                padding: 9px 15px;
                 border-radius: 8px;
                 font-weight: 600;
             }
@@ -215,11 +263,17 @@ class GrabadorMacrosApp(QMainWindow):
             QPushButton:pressed {
                 background-color: #1e293b;
             }
-            QPushButton#btnRecord {
+            QPushButton#btnRecord1 {
                 background-color: #dc2626;
             }
-            QPushButton#btnRecord:hover {
+            QPushButton#btnRecord1:hover {
                 background-color: #ef4444;
+            }
+            QPushButton#btnRecord2 {
+                background-color: #9333ea;
+            }
+            QPushButton#btnRecord2:hover {
+                background-color: #a855f7;
             }
             QPushButton#btnPlay {
                 background-color: #16a34a;
@@ -247,6 +301,24 @@ class GrabadorMacrosApp(QMainWindow):
                 padding: 6px;
                 border: none;
                 font-weight: bold;
+            }
+            QTabWidget::pane {
+                border: 1px solid #334155;
+                border-radius: 8px;
+                background-color: #0f172a;
+            }
+            QTabBar::tab {
+                background-color: #1e293b;
+                color: #94a3b8;
+                padding: 8px 16px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                font-weight: bold;
+                margin-right: 4px;
+            }
+            QTabBar::tab:selected {
+                background-color: #38bdf8;
+                color: #0f172a;
             }
             QSpinBox, QDoubleSpinBox {
                 background-color: #0f172a;
@@ -290,7 +362,7 @@ class GrabadorMacrosApp(QMainWindow):
         # --- CABECERA Y ESTADO ---
         top_layout = QHBoxLayout()
         
-        lbl_titulo = QLabel("⚡ Grabador de Acciones Pixel-Perfect")
+        lbl_titulo = QLabel("⚡ Grabador Dual de Macros (F8 & F1)")
         lbl_titulo.setFont(QFont("Segoe UI", 16, QFont.Bold))
         lbl_titulo.setStyleSheet("color: #38bdf8;")
         
@@ -305,9 +377,13 @@ class GrabadorMacrosApp(QMainWindow):
         # --- PANEL DE CONTROL PRINCIPAL ---
         panel_botones = QHBoxLayout()
         
-        self.btn_grabar = QPushButton("🔴 Grabar (F8)")
-        self.btn_grabar.setObjectName("btnRecord")
-        self.btn_grabar.clicked.connect(self.alternar_grabacion)
+        self.btn_grabar1 = QPushButton("🔴 Grabar Macro 1 (F8)")
+        self.btn_grabar1.setObjectName("btnRecord1")
+        self.btn_grabar1.clicked.connect(self.alternar_grabacion_macro1)
+
+        self.btn_grabar2 = QPushButton("🟣 Grabar Macro 2 (F1)")
+        self.btn_grabar2.setObjectName("btnRecord2")
+        self.btn_grabar2.clicked.connect(self.alternar_grabacion_macro2)
 
         self.btn_reproducir = QPushButton("▶ Reproducir (F4)")
         self.btn_reproducir.setObjectName("btnPlay")
@@ -317,8 +393,8 @@ class GrabadorMacrosApp(QMainWindow):
         self.btn_detener.setObjectName("btnStop")
         self.btn_detener.clicked.connect(self.detener_todo)
 
-        self.btn_limpiar = QPushButton("🗑 Limpiar Macro")
-        self.btn_limpiar.clicked.connect(self.limpiar_macro)
+        self.btn_limpiar = QPushButton("🗑 Limpiar")
+        self.btn_limpiar.clicked.connect(self.limpiar_macros)
 
         self.btn_guardar = QPushButton("💾 Guardar JSON")
         self.btn_guardar.clicked.connect(self.guardar_macro)
@@ -326,7 +402,8 @@ class GrabadorMacrosApp(QMainWindow):
         self.btn_cargar = QPushButton("📂 Cargar JSON")
         self.btn_cargar.clicked.connect(self.cargar_macro)
 
-        panel_botones.addWidget(self.btn_grabar)
+        panel_botones.addWidget(self.btn_grabar1)
+        panel_botones.addWidget(self.btn_grabar2)
         panel_botones.addWidget(self.btn_reproducir)
         panel_botones.addWidget(self.btn_detener)
         panel_botones.addWidget(self.btn_limpiar)
@@ -335,7 +412,7 @@ class GrabadorMacrosApp(QMainWindow):
         panel_botones.addWidget(self.btn_cargar)
         main_layout.addLayout(panel_botones)
 
-        # --- CONFIGURACIÓN Y TABLA EN SPLITTER ---
+        # --- CONFIGURACIÓN Y TABLAS EN SPLITTER ---
         splitter = QSplitter(Qt.Horizontal)
 
         # Configuración (Izquierda)
@@ -349,9 +426,9 @@ class GrabadorMacrosApp(QMainWindow):
         self.chk_infinito.toggled.connect(self._actualizar_estado_spin_iteraciones)
         layout_config.addWidget(self.chk_infinito)
 
-        # Iteraciones fijas
+        # Iteraciones fijas de Macro 1
         layout_iter = QHBoxLayout()
-        lbl_iter = QLabel("Número de Iteraciones:")
+        lbl_iter = QLabel("Iteraciones de Macro 1:")
         self.spin_iter = QSpinBox()
         self.spin_iter.setRange(1, 1000000)
         self.spin_iter.setValue(1)
@@ -359,6 +436,17 @@ class GrabadorMacrosApp(QMainWindow):
         layout_iter.addWidget(lbl_iter)
         layout_iter.addWidget(self.spin_iter)
         layout_config.addLayout(layout_iter)
+
+        # Frecuencia de Macro 2
+        layout_freq = QHBoxLayout()
+        lbl_freq = QLabel("Ejecutar Macro 2 cada:")
+        self.spin_freq_m2 = QSpinBox()
+        self.spin_freq_m2.setRange(1, 100)
+        self.spin_freq_m2.setValue(2)
+        self.spin_freq_m2.setSuffix(" iter. de M1 (e.g. 1 1 2 1 1 2)")
+        layout_freq.addWidget(lbl_freq)
+        layout_freq.addWidget(self.spin_freq_m2)
+        layout_config.addLayout(layout_freq)
 
         # Retardo entre bucles
         layout_delay_bucle = QHBoxLayout()
@@ -392,7 +480,9 @@ class GrabadorMacrosApp(QMainWindow):
         info_box.setStyleSheet("background-color: #0f172a; border-radius: 8px; padding: 10px;")
         info_layout = QVBoxLayout(info_box)
         info_layout.addWidget(QLabel("<b>Atajos Globales de Teclado:</b>"))
-        info_layout.addWidget(QLabel("• <b>F8</b>: Iniciar / Parar Grabación"))
+        info_layout.addWidget(QLabel("• <b>F8</b>: Grabar / Detener Macro 1"))
+        info_layout.addWidget(QLabel("• <b>F1</b>: Grabar / Detener Macro 2"))
+        info_layout.addWidget(QLabel("• <b>Z</b>: Pausar / Reanudar (Grabación y Playback)"))
         info_layout.addWidget(QLabel("• <b>F4</b>: Iniciar / Parar Reproducción"))
         info_layout.addWidget(QLabel("• <b>ESC</b>: Parada de Emergencia"))
         layout_config.addWidget(info_box)
@@ -400,18 +490,25 @@ class GrabadorMacrosApp(QMainWindow):
         layout_config.addStretch()
         splitter.addWidget(grupo_config)
 
-        # Tabla de Acciones (Derecha)
-        grupo_tabla = QGroupBox("📋 Lista de Acciones Grabadas")
-        layout_tabla = QVBoxLayout(grupo_tabla)
+        # Pestañas de Tablas (Derecha)
+        self.tabs_macro = QTabWidget()
+        
+        # Tabla Macro 1
+        self.tabla_m1 = QTableWidget()
+        self.tabla_m1.setColumnCount(5)
+        self.tabla_m1.setHorizontalHeaderLabels(["#", "Tipo de Acción", "Detalle / Tecla", "Coordenadas (X, Y)", "Retardo (s)"])
+        self.tabla_m1.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tabs_macro.addTab(self.tabla_m1, "📋 Macro 1 (F8) [0]")
 
-        self.tabla = QTableWidget()
-        self.tabla.setColumnCount(5)
-        self.tabla.setHorizontalHeaderLabels(["#", "Tipo de Acción", "Detalle / Tecla", "Coordenadas (X, Y)", "Retardo (s)"])
-        self.tabla.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        layout_tabla.addWidget(self.tabla)
+        # Tabla Macro 2
+        self.tabla_m2 = QTableWidget()
+        self.tabla_m2.setColumnCount(5)
+        self.tabla_m2.setHorizontalHeaderLabels(["#", "Tipo de Acción", "Detalle / Tecla", "Coordenadas (X, Y)", "Retardo (s)"])
+        self.tabla_m2.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tabs_macro.addTab(self.tabla_m2, "🟣 Macro 2 (F1) [0]")
 
-        splitter.addWidget(grupo_tabla)
-        splitter.setSizes([320, 680])
+        splitter.addWidget(self.tabs_macro)
+        splitter.setSizes([340, 660])
         main_layout.addWidget(splitter)
 
         # --- BARRA DE ESTADO INFERIOR ---
@@ -439,10 +536,14 @@ class GrabadorMacrosApp(QMainWindow):
             try:
                 if key == keyboard.Key.f8:
                     self.signal_tecla_global.emit("F8")
+                elif key == keyboard.Key.f1:
+                    self.signal_tecla_global.emit("F1")
                 elif key == keyboard.Key.f4:
                     self.signal_tecla_global.emit("F4")
                 elif key == keyboard.Key.esc:
                     self.signal_tecla_global.emit("ESC")
+                elif hasattr(key, 'char') and key.char and key.char.lower() == 'z':
+                    self.signal_tecla_global.emit("Z")
             except Exception as e:
                 print(f"Error en hotkey global: {e}")
 
@@ -452,30 +553,80 @@ class GrabadorMacrosApp(QMainWindow):
 
     def procesar_hotkey_global(self, tecla: str):
         if tecla == "F8":
-            self.alternar_grabacion()
+            self.alternar_grabacion_macro1()
+        elif tecla == "F1":
+            self.alternar_grabacion_macro2()
         elif tecla == "F4":
             self.alternar_reproduccion()
         elif tecla == "ESC":
             self.detener_todo()
+        elif tecla == "Z":
+            if self.grabando_macro != 0:
+                self.alternar_pausa_grabacion()
+            elif self.reproduciendo and self.hilo_playback and self.hilo_playback.esperando_intervencion:
+                self.hilo_playback.reanudar_intervencion()
 
     # --- LÓGICA DE GRABACIÓN ---
-    def alternar_grabacion(self):
-        if self.reproduciendo:
+    def alternar_grabacion_macro1(self):
+        if self.reproduciendo or self.grabando_macro == 2:
             return
-        if self.grabando:
+        if self.grabando_macro == 1:
             self.detener_grabacion()
         else:
-            self.iniciar_grabacion()
+            self.iniciar_grabacion(num_macro=1)
 
-    def iniciar_grabacion(self):
-        self.acciones.clear()
-        self.actualizar_tabla()
-        self.grabando = True
+    def alternar_grabacion_macro2(self):
+        if self.reproduciendo or self.grabando_macro == 1:
+            return
+        if self.grabando_macro == 2:
+            self.detener_grabacion()
+        else:
+            self.iniciar_grabacion(num_macro=2)
+
+    def alternar_pausa_grabacion(self):
+        if self.grabando_macro == 0:
+            return
+
+        macro_nombre = f"MACRO {self.grabando_macro}"
+        acciones = self.acciones_macro1 if self.grabando_macro == 1 else self.acciones_macro2
+
+        if not self.grabacion_pausada:
+            self.grabacion_pausada = True
+            acciones.append({
+                "tipo": "pause_point",
+                "delay": self._calcular_delay()
+            })
+            self.actualizar_tablas()
+            reproducir_sonido_alerta()
+            self.lbl_estado.setText(f"🟠 GRABACIÓN PAUSADA EN {macro_nombre} (Pulsa 'Z' para reanudar)")
+            self.lbl_estado.setStyleSheet("background-color: #7c2d12; color: #fdba74; border-color: #f97316;")
+        else:
+            self.grabacion_pausada = False
+            self.ultimo_tiempo = time.perf_counter()
+            reproducir_sonido_alerta()
+            key_st = "F8" if self.grabando_macro == 1 else "F1"
+            self.lbl_estado.setText(f"🔴 GRABANDO {macro_nombre}... (Pulsa {key_st} para parar, 'Z' para pausar)")
+            self.lbl_estado.setStyleSheet("background-color: #7f1d1d; color: #fca5a5; border-color: #ef4444;")
+
+    def iniciar_grabacion(self, num_macro: int):
+        self.grabando_macro = num_macro
+        self.grabacion_pausada = False
         self.ultimo_tiempo = time.perf_counter()
 
-        self.lbl_estado.setText("🔴 GRABANDO... (Pulsa F8 para parar)")
-        self.lbl_estado.setStyleSheet("background-color: #7f1d1d; color: #fca5a5; border-color: #ef4444;")
-        self.btn_grabar.setText("⏹ Detener Grabación (F8)")
+        if num_macro == 1:
+            self.acciones_macro1.clear()
+            self.tabs_macro.setCurrentIndex(0)
+            self.lbl_estado.setText("🔴 GRABANDO MACRO 1... (Pulsa F8 para parar, 'Z' para pausar)")
+            self.lbl_estado.setStyleSheet("background-color: #7f1d1d; color: #fca5a5; border-color: #ef4444;")
+            self.btn_grabar1.setText("⏹ Detener M1 (F8)")
+        else:
+            self.acciones_macro2.clear()
+            self.tabs_macro.setCurrentIndex(1)
+            self.lbl_estado.setText("🟣 GRABANDO MACRO 2... (Pulsa F1 para parar, 'Z' para pausar)")
+            self.lbl_estado.setStyleSheet("background-color: #581c87; color: #e9d5ff; border-color: #a855f7;")
+            self.btn_grabar2.setText("⏹ Detener M2 (F1)")
+
+        self.actualizar_tablas()
 
         # Iniciar escuchadores del ratón y teclado
         self.mouse_listener = mouse.Listener(
@@ -492,9 +643,12 @@ class GrabadorMacrosApp(QMainWindow):
         self.keyboard_listener.start()
 
     def detener_grabacion(self):
-        if not self.grabando:
+        if self.grabando_macro == 0:
             return
-        self.grabando = False
+
+        macro_detenida = self.grabando_macro
+        self.grabando_macro = 0
+        self.grabacion_pausada = False
 
         if self.mouse_listener:
             self.mouse_listener.stop()
@@ -503,14 +657,16 @@ class GrabadorMacrosApp(QMainWindow):
             self.keyboard_listener.stop()
             self.keyboard_listener = None
 
-        # Filtrar la tecla F8 al detener si se grabó como última acción
-        if self.acciones and self.acciones[-1].get("key") in ["Key.f8", "F8"]:
-            self.acciones.pop()
+        # Filtrar teclas de activación F8 / F1 al detener si se grabaron como última acción
+        acciones = self.acciones_macro1 if macro_detenida == 1 else self.acciones_macro2
+        if acciones and acciones[-1].get("key") in ["Key.f8", "F8", "Key.f1", "F1"]:
+            acciones.pop()
 
-        self.lbl_estado.setText(f"🟢 LISTO ({len(self.acciones)} acciones grabadas)")
+        self.lbl_estado.setText(f"🟢 LISTO (Macro 1: {len(self.acciones_macro1)} acc | Macro 2: {len(self.acciones_macro2)} acc)")
         self.lbl_estado.setStyleSheet("background-color: #1e293b; color: #38bdf8; border-color: #334155;")
-        self.btn_grabar.setText("🔴 Grabar (F8)")
-        self.actualizar_tabla()
+        self.btn_grabar1.setText("🔴 Grabar Macro 1 (F8)")
+        self.btn_grabar2.setText("🟣 Grabar Macro 2 (F1)")
+        self.actualizar_tablas()
 
     def _calcular_delay(self) -> float:
         ahora = time.perf_counter()
@@ -518,63 +674,94 @@ class GrabadorMacrosApp(QMainWindow):
         self.ultimo_tiempo = ahora
         return round(delay, 4)
 
+    def _es_tecla_z(self, key) -> bool:
+        if hasattr(key, 'char') and key.char and key.char.lower() == 'z':
+            return True
+        if hasattr(key, 'vk') and key.vk == 90:
+            return True
+        return False
+
     def _on_mouse_move(self, x, y):
-        if not self.grabando or not self.chk_movimiento_continuo.isChecked():
+        if self.grabando_macro == 0 or self.grabacion_pausada or not self.chk_movimiento_continuo.isChecked():
             return
-        self.acciones.append({
+        acc = {
             "tipo": "mouse_move",
             "x": int(x),
             "y": int(y),
             "delay": self._calcular_delay()
-        })
+        }
+        if self.grabando_macro == 1:
+            self.acciones_macro1.append(acc)
+        else:
+            self.acciones_macro2.append(acc)
 
     def _on_mouse_click(self, x, y, button, pressed):
-        if not self.grabando:
+        if self.grabando_macro == 0 or self.grabacion_pausada:
             return
-        self.acciones.append({
+        acc = {
             "tipo": "mouse_click",
             "x": int(x),
             "y": int(y),
             "button": button.name,
             "pressed": pressed,
             "delay": self._calcular_delay()
-        })
+        }
+        if self.grabando_macro == 1:
+            self.acciones_macro1.append(acc)
+        else:
+            self.acciones_macro2.append(acc)
 
     def _on_mouse_scroll(self, x, y, dx, dy):
-        if not self.grabando:
+        if self.grabando_macro == 0 or self.grabacion_pausada:
             return
-        self.acciones.append({
+        acc = {
             "tipo": "mouse_scroll",
             "x": int(x),
             "y": int(y),
             "dx": dx,
             "dy": dy,
             "delay": self._calcular_delay()
-        })
+        }
+        if self.grabando_macro == 1:
+            self.acciones_macro1.append(acc)
+        else:
+            self.acciones_macro2.append(acc)
 
     def _on_key_press(self, key):
-        if not self.grabando:
+        if self.grabando_macro == 0 or self.grabacion_pausada:
+            return
+        if self._es_tecla_z(key):
             return
         key_str = self._key_to_string(key)
-        if key_str in ["Key.f8", "Key.f4", "Key.esc"]:
+        if key_str in ["Key.f8", "Key.f1", "Key.f4", "Key.esc"]:
             return
-        self.acciones.append({
+        acc = {
             "tipo": "key_press",
             "key": key_str,
             "delay": self._calcular_delay()
-        })
+        }
+        if self.grabando_macro == 1:
+            self.acciones_macro1.append(acc)
+        else:
+            self.acciones_macro2.append(acc)
 
     def _on_key_release(self, key):
-        if not self.grabando:
+        if self.grabando_macro == 0 or self.grabacion_pausada:
+            return
+        if self._es_tecla_z(key):
             return
         key_str = self._key_to_string(key)
-        if key_str in ["Key.f8", "Key.f4", "Key.esc"]:
+        if key_str in ["Key.f8", "Key.f1", "Key.f4", "Key.esc"]:
             return
-        self.acciones.append({
+        acc = {
             "tipo": "key_release",
             "key": key_str,
             "delay": self._calcular_delay()
-        })
+        }
+        if self.grabando_macro == 1:
+            self.acciones_macro1.append(acc)
+        else:
+            self.acciones_macro2.append(acc)
 
     def _key_to_string(self, key) -> str:
         if isinstance(key, keyboard.Key):
@@ -587,7 +774,7 @@ class GrabadorMacrosApp(QMainWindow):
 
     # --- LÓGICA DE REPRODUCCIÓN ---
     def alternar_reproduccion(self):
-        if self.grabando:
+        if self.grabando_macro != 0:
             return
         if self.reproduciendo:
             self.detener_reproduccion()
@@ -595,28 +782,47 @@ class GrabadorMacrosApp(QMainWindow):
             self.iniciar_reproduccion()
 
     def iniciar_reproduccion(self):
-        if not self.acciones:
-            QMessageBox.warning(self, "Sin Acciones", "No hay acciones grabadas para reproducir.")
+        if not self.acciones_macro1 and not self.acciones_macro2:
+            QMessageBox.warning(self, "Sin Acciones", "No hay acciones grabadas en Macro 1 ni en Macro 2.")
             return
 
         self.reproduciendo = True
         infinitas = self.chk_infinito.isChecked()
         max_iter = self.spin_iter.value()
+        freq_m2 = self.spin_freq_m2.value()
         retardo_bucle = self.spin_delay_bucle.value()
         vel = self.slider_vel.value() / 10.0
 
-        self.lbl_estado.setText("▶ REPRODUCIENDO... (Pulsa F4 o ESC para detener)")
+        self.lbl_estado.setText("▶ INICIANDO REPRODUCCIÓN... (F4/ESC para detener)")
         self.lbl_estado.setStyleSheet("background-color: #14532d; color: #86efac; border-color: #22c55e;")
         self.btn_reproducir.setText("⏹ Detener Repr. (F4)")
 
-        self.hilo_playback = HiloReproduccion(self.acciones, infinitas, max_iter, retardo_bucle, vel)
-        self.hilo_playback.progreso_iteracion.connect(self._on_progreso_iteracion)
+        self.hilo_playback = HiloReproduccion(
+            self.acciones_macro1, self.acciones_macro2, freq_m2,
+            infinitas, max_iter, retardo_bucle, vel
+        )
+        self.hilo_playback.cambio_macro_ejecutando.connect(self._on_cambio_macro_ejecutando)
+        self.hilo_playback.intervencion_requerida.connect(self._on_intervencion_requerida)
+        self.hilo_playback.intervencion_reanudada.connect(self._on_intervencion_reanudada)
         self.hilo_playback.finalizado.connect(self.detener_reproduccion)
         self.hilo_playback.start()
 
-    def _on_progreso_iteracion(self, actual: int, total: int):
-        texto_total = "∞" if total == 0 else str(total)
-        self.lbl_estado.setText(f"▶ REPRODUCIENDO BUCLE #{actual} / {texto_total} (Pulsa F4/ESC para detener)")
+    def _on_cambio_macro_ejecutando(self, nombre_macro: str, iteracion: int):
+        if not (self.hilo_playback and self.hilo_playback.esperando_intervencion):
+            color_bg = "#14532d" if "1" in nombre_macro else "#581c87"
+            color_text = "#86efac" if "1" in nombre_macro else "#e9d5ff"
+            color_border = "#22c55e" if "1" in nombre_macro else "#a855f7"
+            
+            self.lbl_estado.setText(f"▶ REPRODUCIENDO {nombre_macro} | Iteración #{iteracion} (F4/ESC para detener)")
+            self.lbl_estado.setStyleSheet(f"background-color: {color_bg}; color: {color_text}; border-color: {color_border};")
+
+    def _on_intervencion_requerida(self, nombre_macro: str):
+        self.lbl_estado.setText(f"⏸ PAUSADO EN REPRODUCCIÓN ({nombre_macro}) - Pulsa 'Z' para continuar")
+        self.lbl_estado.setStyleSheet("background-color: #7c2d12; color: #fdba74; border-color: #f97316;")
+
+    def _on_intervencion_reanudada(self):
+        self.lbl_estado.setText("▶ REPRODUCIENDO... (Pulsa F4 o ESC para detener)")
+        self.lbl_estado.setStyleSheet("background-color: #14532d; color: #86efac; border-color: #22c55e;")
 
     def detener_reproduccion(self):
         if not self.reproduciendo:
@@ -632,54 +838,70 @@ class GrabadorMacrosApp(QMainWindow):
         self.btn_reproducir.setText("▶ Reproducir (F4)")
 
     def detener_todo(self):
-        if self.grabando:
+        if self.grabando_macro != 0:
             self.detener_grabacion()
         if self.reproduciendo:
             self.detener_reproduccion()
 
-    def limpiar_macro(self):
+    def limpiar_macros(self):
         self.detener_todo()
-        self.acciones.clear()
-        self.actualizar_tabla()
-        self.lbl_estado.setText("🟢 LISTO (Macro Limpiada)")
+        self.acciones_macro1.clear()
+        self.acciones_macro2.clear()
+        self.actualizar_tablas()
+        self.lbl_estado.setText("🟢 LISTO (Macros Limpiadas)")
 
-    # --- TABLA Y PERSISTENCIA JSON ---
-    def actualizar_tabla(self):
-        self.tabla.setRowCount(0)
-        for i, acc in enumerate(self.acciones):
-            self.tabla.insertRow(i)
-            self.tabla.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+    # --- TABLAS Y PERSISTENCIA JSON ---
+    def _poblar_tabla(self, tabla: QTableWidget, acciones: List[Dict[str, Any]]):
+        tabla.setRowCount(0)
+        for i, acc in enumerate(acciones):
+            tabla.insertRow(i)
+            tabla.setItem(i, 0, QTableWidgetItem(str(i + 1)))
             
             tipo = acc.get("tipo", "")
-            icono = "🖱️" if "mouse" in tipo else "⌨️"
-            self.tabla.setItem(i, 1, QTableWidgetItem(f"{icono} {tipo}"))
-            
-            detalle = ""
-            if "mouse" in tipo:
-                detalle = f"Boton: {acc.get('button', '')} ({'Presionar' if acc.get('pressed') else 'Soltar'})" if tipo == "mouse_click" else ""
+            if tipo == "pause_point":
+                tabla.setItem(i, 1, QTableWidgetItem("🔔 Pausa / Intervención ('Z')"))
+                tabla.setItem(i, 2, QTableWidgetItem("Esperar a pulsar 'Z' para continuar"))
+                tabla.setItem(i, 3, QTableWidgetItem("-"))
+                tabla.setItem(i, 4, QTableWidgetItem(f"{acc.get('delay', 0.0):.4f}s"))
             else:
-                detalle = f"Tecla: {acc.get('key', '')} ({'Presionar' if tipo == 'key_press' else 'Soltar'})"
-            self.tabla.setItem(i, 2, QTableWidgetItem(detalle))
+                icono = "🖱️" if "mouse" in tipo else "⌨️"
+                tabla.setItem(i, 1, QTableWidgetItem(f"{icono} {tipo}"))
+                
+                detalle = ""
+                if "mouse" in tipo:
+                    detalle = f"Boton: {acc.get('button', '')} ({'Presionar' if acc.get('pressed') else 'Soltar'})" if tipo == "mouse_click" else ""
+                else:
+                    detalle = f"Tecla: {acc.get('key', '')} ({'Presionar' if tipo == 'key_press' else 'Soltar'})"
+                tabla.setItem(i, 2, QTableWidgetItem(detalle))
 
-            coords = f"X: {acc.get('x', '-')}, Y: {acc.get('y', '-')}" if "x" in acc else "-"
-            self.tabla.setItem(i, 3, QTableWidgetItem(coords))
-            self.tabla.setItem(i, 4, QTableWidgetItem(f"{acc.get('delay', 0.0):.4f}s"))
+                coords = f"X: {acc.get('x', '-')}, Y: {acc.get('y', '-')}" if "x" in acc else "-"
+                tabla.setItem(i, 3, QTableWidgetItem(coords))
+                tabla.setItem(i, 4, QTableWidgetItem(f"{acc.get('delay', 0.0):.4f}s"))
+
+    def actualizar_tablas(self):
+        self._poblar_tabla(self.tabla_m1, self.acciones_macro1)
+        self._poblar_tabla(self.tabla_m2, self.acciones_macro2)
+        self.tabs_macro.setTabText(0, f"📋 Macro 1 (F8) [{len(self.acciones_macro1)}]")
+        self.tabs_macro.setTabText(1, f"🟣 Macro 2 (F1) [{len(self.acciones_macro2)}]")
 
     def guardar_macro(self):
-        if not self.acciones:
-            QMessageBox.warning(self, "Macro Vacía", "No hay acciones para guardar.")
+        if not self.acciones_macro1 and not self.acciones_macro2:
+            QMessageBox.warning(self, "Macros Vacías", "No hay acciones para guardar.")
             return
 
         path, _ = QFileDialog.getSaveFileName(self, "Guardar Macro JSON", "", "Archivos JSON (*.json)")
         if path:
             data = {
-                "version": "1.0",
-                "total_acciones": len(self.acciones),
-                "acciones": self.acciones
+                "version": "2.0",
+                "frecuencia_macro2": self.spin_freq_m2.value(),
+                "total_acciones_macro1": len(self.acciones_macro1),
+                "total_acciones_macro2": len(self.acciones_macro2),
+                "acciones_macro1": self.acciones_macro1,
+                "acciones_macro2": self.acciones_macro2
             }
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            QMessageBox.information(self, "Éxito", f"Macro guardada con éxito en:\n{path}")
+            QMessageBox.information(self, "Éxito", f"Macros guardadas con éxito en:\n{path}")
 
     def cargar_macro(self):
         path, _ = QFileDialog.getOpenFileName(self, "Cargar Macro JSON", "", "Archivos JSON (*.json)")
@@ -687,10 +909,21 @@ class GrabadorMacrosApp(QMainWindow):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                self.acciones = data.get("acciones", [])
-                self.actualizar_tabla()
-                QMessageBox.information(self, "Éxito", f"Se cargaron {len(self.acciones)} acciones desde la macro.")
-                self.lbl_estado.setText(f"🟢 MACRO CARGADA ({len(self.acciones)} acciones)")
+                
+                if "acciones_macro1" in data:
+                    self.acciones_macro1 = data.get("acciones_macro1", [])
+                    self.acciones_macro2 = data.get("acciones_macro2", [])
+                    self.spin_freq_m2.setValue(data.get("frecuencia_macro2", 2))
+                else:
+                    self.acciones_macro1 = data.get("acciones", [])
+                    self.acciones_macro2 = []
+
+                self.actualizar_tablas()
+                QMessageBox.information(
+                    self, "Éxito",
+                    f"Se cargaron {len(self.acciones_macro1)} acciones en Macro 1 y {len(self.acciones_macro2)} acciones en Macro 2."
+                )
+                self.lbl_estado.setText(f"🟢 MACROS CARGADAS (M1: {len(self.acciones_macro1)} | M2: {len(self.acciones_macro2)})")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"No se pudo cargar la macro:\n{e}")
 
@@ -708,3 +941,4 @@ if __name__ == "__main__":
     ventana = GrabadorMacrosApp()
     ventana.show()
     sys.exit(app.exec_())
+
