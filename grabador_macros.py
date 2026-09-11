@@ -37,14 +37,45 @@ activar_dpi_awareness()
 # --- HELPER SONIDO DE ALERTA ---
 def reproducir_sonido_alerta():
     def _beep():
-        try:
-            import winsound
-            winsound.Beep(1000, 400)  # 1000 Hz, 400 ms
-        except Exception:
+        if sys.platform == 'win32':
             try:
-                QApplication.beep()
+                import winsound
+                winsound.Beep(1000, 400)  # 1000 Hz, 400 ms
+                return
             except Exception:
                 pass
+        else:
+            # Linux: intentar con paplay (PulseAudio), beep, o speaker-test
+            import subprocess
+            try:
+                # Generar un beep con paplay usando un archivo WAV temporal
+                import wave, struct, tempfile
+                fname = tempfile.mktemp(suffix='.wav')
+                sample_rate = 44100
+                duration = 0.4  # segundos
+                freq = 1000  # Hz
+                num_samples = int(sample_rate * duration)
+                with wave.open(fname, 'w') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sample_rate)
+                    for i in range(num_samples):
+                        val = int(32767 * 0.5 * __import__('math').sin(2 * __import__('math').pi * freq * i / sample_rate))
+                        wf.writeframes(struct.pack('<h', val))
+                subprocess.Popen(['paplay', fname], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            except Exception:
+                pass
+            try:
+                subprocess.Popen(['beep', '-f', '1000', '-l', '400'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            except Exception:
+                pass
+        # Fallback universal
+        try:
+            QApplication.beep()
+        except Exception:
+            pass
     threading.Thread(target=_beep, daemon=True).start()
 
 # --- CLASE HILO DE REPRODUCCIÓN (PLAYBACK) ---
