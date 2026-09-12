@@ -9,20 +9,40 @@
         body {
             font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             display: flex;
+            flex-direction: column;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             background-color: #f0f2f5;
             margin: 0;
+            padding: 2rem 1rem;
+            box-sizing: border-box;
+            gap: 2rem;
+        }
+        .contenedor-app {
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+            align-items: center;
+            max-width: 750px;
+            width: 100%;
         }
         .tarjeta {
             background: white;
-            padding: 2.5rem 3rem;
+            padding: 2.2rem 2.8rem;
             border-radius: 20px;
             box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
             display: flex;
             align-items: center;
-            gap: 3.5rem;
+            gap: 3rem;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .tarjeta-email {
+            flex-direction: column;
+            gap: 1.2rem;
+            align-items: stretch;
+            padding: 2rem 2.8rem;
         }
         
         /* Sección de número de registro (muy a la izquierda) */
@@ -65,25 +85,33 @@
             display: flex;
             flex-direction: column;
             align-items: center;
+            flex-grow: 1;
         }
         input[type="text"] {
-            font-size: 2rem;
+            font-size: 1.9rem;
             text-align: center;
-            padding: 0.9rem 1.4rem;
-            min-width: 320px;
-            max-width: 440px;
+            padding: 0.85rem 1.2rem;
+            width: 100%;
+            box-sizing: border-box;
             border: 2px solid #e2e8f0;
             border-radius: 14px;
             background-color: #f8fafc;
             color: #1e293b;
             font-weight: 800;
-            margin-bottom: 1.5rem;
+            margin-bottom: 1.3rem;
             outline: none;
             letter-spacing: 0.5px;
             transition: border-color 0.2s;
         }
         input[type="text"]:focus {
             border-color: #3b82f6;
+        }
+        .pantalla-email {
+            font-size: 1.45rem !important;
+            color: #0f172a !important;
+            letter-spacing: 0.2px !important;
+            margin-bottom: 0 !important;
+            background-color: #f1f5f9 !important;
         }
         .botones {
             display: flex;
@@ -140,6 +168,38 @@
             font-size: 1.15rem;
         }
         #btnCopiar:hover { background-color: #059669; }
+
+        /* Estilos tarjeta de email */
+        .titulo-seccion {
+            font-size: 0.85rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #64748b;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .contenedor-email-input {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+        .btn-generar {
+            background-color: #8b5cf6;
+            color: white;
+        }
+        .btn-generar:hover {
+            background-color: #7c3aed;
+        }
+        .btn-copiar-email {
+            background-color: #06b6d4;
+            color: white;
+            flex-grow: 1;
+        }
+        .btn-copiar-email:hover {
+            background-color: #0891b2;
+        }
         
         /* Notificación flotante de "Copiado" */
         .toast {
@@ -166,24 +226,39 @@
 </head>
 <body>
 
-    <div class="tarjeta">
-        <!-- Número de registro muy a la izquierda -->
-        <div class="seccion-registro" title="Número de registro actual">
-            <span class="etiqueta-registro">Nº Registro</span>
-            <div id="numRegistro" class="numero-registro">4</div>
+    <div class="contenedor-app">
+        <!-- TARJETA 1: REGISTRO Y NOMBRES DE USUARIO -->
+        <div class="tarjeta">
+            <!-- Número de registro muy a la izquierda -->
+            <div class="seccion-registro" title="Número de registro actual">
+                <span class="etiqueta-registro">Nº Registro</span>
+                <div id="numRegistro" class="numero-registro">4</div>
+            </div>
+
+            <div class="divisor"></div>
+
+            <!-- Sección de copiado -->
+            <div class="seccion-copiado">
+                <input type="text" id="pantalla" value="" readonly>
+                <div class="botones">
+                    <button id="btnMenos10" class="btn-salto" title="Retroceder 10 registros">-10</button>
+                    <button id="btnMenos" title="Registro anterior">-</button>
+                    <button id="btnMas" title="Siguiente registro">+</button>
+                    <button id="btnMas10" class="btn-salto" title="Avanzar 10 registros">+10</button>
+                    <button id="btnCopiar">Copiar</button>
+                </div>
+            </div>
         </div>
 
-        <div class="divisor"></div>
-
-        <!-- Sección de copiado -->
-        <div class="seccion-copiado">
-            <input type="text" id="pantalla" value="" readonly>
-            <div class="botones">
-                <button id="btnMenos10" class="btn-salto" title="Retroceder 10 registros">-10</button>
-                <button id="btnMenos" title="Registro anterior">-</button>
-                <button id="btnMas" title="Siguiente registro">+</button>
-                <button id="btnMas10" class="btn-salto" title="Avanzar 10 registros">+10</button>
-                <button id="btnCopiar">Copiar</button>
+        <!-- TARJETA 2: GENERADOR ALEATORIO DE EMAILS ÚNICOS -->
+        <div class="tarjeta tarjeta-email">
+            <div class="titulo-seccion">
+                📧 Generador de Emails Aleatorios (100% Únicos)
+            </div>
+            <div class="contenedor-email-input">
+                <input type="text" id="pantallaEmail" class="pantalla-email" value="" readonly>
+                <button id="btnGenerarEmail" class="btn-generar" title="Generar nuevo email aleatorio único">🎲 Generar</button>
+                <button id="btnCopiarEmail" class="btn-copiar-email" title="Copiar email al portapapeles">Copiar Email</button>
             </div>
         </div>
     </div>
@@ -1105,15 +1180,26 @@
         const btnMas = document.getElementById('btnMas');
         const btnMas10 = document.getElementById('btnMas10');
         const btnCopiar = document.getElementById('btnCopiar');
+
+        const pantallaEmail = document.getElementById('pantallaEmail');
+        const btnGenerarEmail = document.getElementById('btnGenerarEmail');
+        const btnCopiarEmail = document.getElementById('btnCopiarEmail');
         const toast = document.getElementById('toast');
 
-        // Función para obtener el texto según el número de registro
+        // Mostrar mensaje toast
+        function mostrarToast(mensaje) {
+            toast.textContent = mensaje || '¡Copiado al portapapeles! 📋';
+            toast.classList.add('mostrar');
+            setTimeout(() => {
+                toast.classList.remove('mostrar');
+            }, 2000);
+        }
+
+        // --- SECCIÓN 1: LÓGICA DE REGISTROS ---
         function obtenerTexto(registro) {
             if (registro < 117) {
-                // Para registros anteriores (1 a 116): y004, y005, etc.
                 return 'y' + String(registro).padStart(3, '0');
             } else {
-                // Para registros 117 en adelante: nombres de usuario únicos
                 const index = registro - 117;
                 if (index < nombresUsuarios.length) {
                     return nombresUsuarios[index];
@@ -1123,22 +1209,18 @@
             }
         }
 
-        // Función para actualizar la interfaz
         function actualizarVista() {
             numRegistro.textContent = registroActual;
             pantalla.value = obtenerTexto(registroActual);
         }
 
-        // Inicializar pantalla con el registro 4
         actualizarVista();
 
-        // Botón + (Avanzar 1 registro)
         btnMas.addEventListener('click', () => {
             registroActual++;
             actualizarVista();
         });
 
-        // Botón - (Retroceder 1 registro)
         btnMenos.addEventListener('click', () => {
             if (registroActual > 1) {
                 registroActual--;
@@ -1146,33 +1228,89 @@
             }
         });
 
-        // Botón +10 (Avanzar 10 registros)
         btnMas10.addEventListener('click', () => {
             registroActual += 10;
             actualizarVista();
         });
 
-        // Botón -10 (Retroceder 10 registros)
         btnMenos10.addEventListener('click', () => {
             registroActual = Math.max(1, registroActual - 10);
             actualizarVista();
         });
 
-        // Botón Copiar (Solo copia el texto de la pantalla)
         btnCopiar.addEventListener('click', () => {
             navigator.clipboard.writeText(pantalla.value).then(() => {
-                toast.classList.add('mostrar');
-                setTimeout(() => {
-                    toast.classList.remove('mostrar');
-                }, 2000);
+                mostrarToast('¡Usuario copiado al portapapeles! 📋');
             });
         });
 
-        // Atajos de teclado:
-        // Flecha Derecha / '+' para avanzar 1
-        // Flecha Izquierda / '-' para retroceder 1
-        // PageDown / Shift + Flecha Derecha para avanzar 10
-        // PageUp / Shift + Flecha Izquierda para retroceder 10
+        // --- SECCIÓN 2: GENERADOR DE EMAILS 100% ÚNICOS Y ALEATORIOS ---
+        function obtenerHistorialEmails() {
+            try {
+                const hist = localStorage.getItem('historial_emails_unicos');
+                return hist ? JSON.parse(hist) : [];
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function guardarEnHistorial(email) {
+            try {
+                const hist = obtenerHistorialEmails();
+                hist.push(email);
+                localStorage.setItem('historial_emails_unicos', JSON.stringify(hist));
+            } catch (e) {}
+        }
+
+        function generarCadenaAleatoria() {
+            const caracteres = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            let resultado = '';
+            
+            // 1. Bytes aleatorios criptográficos
+            const arrayAleatorio = new Uint8Array(10);
+            window.crypto.getRandomValues(arrayAleatorio);
+            
+            for (let i = 0; i < arrayAleatorio.length; i++) {
+                resultado += caracteres[arrayAleatorio[i] % caracteres.length];
+            }
+            
+            // 2. Timestamp en base36 (milisegundos exactos)
+            const tiempoBase36 = (Date.now() + Math.floor(performance.now() * 100)).toString(36);
+            
+            return resultado + tiempoBase36;
+        }
+
+        function generarNuevoEmailUnico() {
+            const historial = obtenerHistorialEmails();
+            let nuevoEmail = '';
+            let intentos = 0;
+            
+            do {
+                const prefijo = generarCadenaAleatoria();
+                nuevoEmail = prefijo + '@gmail.com';
+                intentos++;
+            } while (historial.includes(nuevoEmail) && intentos < 100);
+
+            guardarEnHistorial(nuevoEmail);
+            pantallaEmail.value = nuevoEmail;
+        }
+
+        // Generar el primer email al cargar
+        generarNuevoEmailUnico();
+
+        // Botón generar email
+        btnGenerarEmail.addEventListener('click', () => {
+            generarNuevoEmailUnico();
+        });
+
+        // Botón copiar email
+        btnCopiarEmail.addEventListener('click', () => {
+            navigator.clipboard.writeText(pantallaEmail.value).then(() => {
+                mostrarToast('¡Email copiado al portapapeles! 📧');
+            });
+        });
+
+        // Atajos de teclado generales
         document.addEventListener('keydown', (e) => {
             if (e.key === 'PageDown' || (e.shiftKey && e.key === 'ArrowRight')) {
                 registroActual += 10;

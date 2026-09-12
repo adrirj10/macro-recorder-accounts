@@ -78,6 +78,23 @@ def reproducir_sonido_alerta():
             pass
     threading.Thread(target=_beep, daemon=True).start()
 
+def reproducir_tres_pitidos_cortos():
+    def _beeps():
+        for i in range(3):
+            if sys.platform == 'win32':
+                try:
+                    import winsound
+                    winsound.Beep(1200, 150)  # 1200 Hz, 150 ms
+                except Exception:
+                    pass
+            else:
+                try:
+                    QApplication.beep()
+                except Exception:
+                    pass
+            time.sleep(0.12)
+    threading.Thread(target=_beeps, daemon=True).start()
+
 # --- CLASE HILO DE REPRODUCCIÓN (PLAYBACK) ---
 class HiloReproduccion(QThread):
     progreso_iteracion = pyqtSignal(int, int) # (iteracion_actual, total_iteraciones)
@@ -90,7 +107,9 @@ class HiloReproduccion(QThread):
 
     def __init__(self, acciones_macro1: List[Dict[str, Any]], acciones_macro2: List[Dict[str, Any]],
                  frecuencia_macro2: int, infinitas: bool, max_iteraciones: int,
-                 retardo_bucle: float, velocidad: float):
+                 retardo_bucle: float, velocidad: float,
+                 activar_macro_especial: bool = True, intervalo_m2_especial: int = 3,
+                 minutos_especial: float = 7.0):
         super().__init__()
         self.acciones_macro1 = acciones_macro1
         self.acciones_macro2 = acciones_macro2
@@ -99,6 +118,9 @@ class HiloReproduccion(QThread):
         self.max_iteraciones = max_iteraciones
         self.retardo_bucle = retardo_bucle
         self.velocidad = max(0.01, velocidad)
+        self.activar_macro_especial = activar_macro_especial
+        self.intervalo_m2_especial = max(1, intervalo_m2_especial)
+        self.tiempo_espera_especial_seg = max(0.0, minutos_especial * 60.0)
         self.solicitante_parada = False
         self.esperando_intervencion = False
         self.mouse_controller = mouse.Controller()
@@ -208,6 +230,36 @@ class HiloReproduccion(QThread):
                 iteracion_m2 += 1
                 self.cambio_macro_ejecutando.emit("Macro 2 (F1)", iteracion_m2)
                 self._ejecutar_secuencia(self.acciones_macro2, "Macro 2")
+
+                # 3. Tras completarse cada N (por defecto 3) iteraciones de Macro 2
+                if not self.solicitante_parada and self.activar_macro_especial and iteracion_m2 > 0 and (iteracion_m2 % self.intervalo_m2_especial == 0):
+                    # a) 3 pitidos cortos
+                    reproducir_tres_pitidos_cortos()
+
+                    # b) Activar timer de espera (por defecto 7 min = 420s)
+                    tiempo_inicio = time.perf_counter()
+                    tiempo_fin = tiempo_inicio + self.tiempo_espera_especial_seg
+                    
+                    ultimo_segundo_notificado = -1
+                    while time.perf_counter() < tiempo_fin:
+                        if self.solicitante_parada:
+                            break
+                        
+                        restante = int(tiempo_fin - time.perf_counter())
+                        if restante != ultimo_segundo_notificado:
+                            ultimo_segundo_notificado = restante
+                            mins = restante // 60
+                            secs = restante % 60
+                            self.cambio_macro_ejecutando.emit(
+                                f"⏳ Timer de Espera ({mins:02d}:{secs:02d}) tras {iteracion_m2}ª iter de Macro 2",
+                                iteracion_m2
+                            )
+                        time.sleep(0.1)
+
+                    if not self.solicitante_parada:
+                        # c) Repetición adicional de Macro 2 (Macro Especial, no suma a iteracion_m2)
+                        self.cambio_macro_ejecutando.emit("Macro 2 Especial (F1)", iteracion_m2)
+                        self._ejecutar_secuencia(self.acciones_macro2, "Macro 2 Especial")
 
             # Retardo entre bucles
             if not self.solicitante_parada and (self.infinitas or iteracion_m1 < self.max_iteraciones):
@@ -424,7 +476,13 @@ class GrabadorMacrosApp(QMainWindow):
         self.btn_detener.setObjectName("btnStop")
         self.btn_detener.clicked.connect(self.detener_todo)
 
-        self.btn_limpiar = QPushButton("🗑 Limpiar")
+        self.btn_limpiar1 = QPushButton("🗑 Limpiar M1")
+        self.btn_limpiar1.clicked.connect(self.limpiar_macro1)
+
+        self.btn_limpiar2 = QPushButton("🗑 Limpiar M2")
+        self.btn_limpiar2.clicked.connect(self.limpiar_macro2)
+
+        self.btn_limpiar = QPushButton("🗑 Limpiar Todo")
         self.btn_limpiar.clicked.connect(self.limpiar_macros)
 
         self.btn_guardar = QPushButton("💾 Guardar JSON")
@@ -437,6 +495,9 @@ class GrabadorMacrosApp(QMainWindow):
         panel_botones.addWidget(self.btn_grabar2)
         panel_botones.addWidget(self.btn_reproducir)
         panel_botones.addWidget(self.btn_detener)
+        panel_botones.addSpacing(5)
+        panel_botones.addWidget(self.btn_limpiar1)
+        panel_botones.addWidget(self.btn_limpiar2)
         panel_botones.addWidget(self.btn_limpiar)
         panel_botones.addSpacing(10)
         panel_botones.addWidget(self.btn_guardar)
@@ -478,6 +539,34 @@ class GrabadorMacrosApp(QMainWindow):
         layout_freq.addWidget(lbl_freq)
         layout_freq.addWidget(self.spin_freq_m2)
         layout_config.addLayout(layout_freq)
+
+        # Macro Especial (Timer 7 min tras 3 iter de M2)
+        layout_especial_m2 = QVBoxLayout()
+        self.chk_macro_especial = QCheckBox("⏳ Timer 7 min + Macro 2 Especial")
+        self.chk_macro_especial.setChecked(True)
+        self.chk_macro_especial.toggled.connect(self._actualizar_estado_spin_especial)
+        layout_especial_m2.addWidget(self.chk_macro_especial)
+
+        layout_especial_params = QHBoxLayout()
+        lbl_especial_iter = QLabel("Cada:")
+        self.spin_intervalo_especial = QSpinBox()
+        self.spin_intervalo_especial.setRange(1, 100)
+        self.spin_intervalo_especial.setValue(3)
+        self.spin_intervalo_especial.setSuffix(" iter. de M2")
+
+        lbl_especial_timer = QLabel("Timer:")
+        self.spin_minutos_especial = QSpinBox()
+        self.spin_minutos_especial.setRange(1, 1440)
+        self.spin_minutos_especial.setValue(7)
+        self.spin_minutos_especial.setSuffix(" min")
+
+        layout_especial_params.addWidget(lbl_especial_iter)
+        layout_especial_params.addWidget(self.spin_intervalo_especial)
+        layout_especial_params.addWidget(lbl_especial_timer)
+        layout_especial_params.addWidget(self.spin_minutos_especial)
+        layout_especial_m2.addLayout(layout_especial_params)
+
+        layout_config.addLayout(layout_especial_m2)
 
         # Retardo entre bucles
         layout_delay_bucle = QHBoxLayout()
@@ -525,18 +614,52 @@ class GrabadorMacrosApp(QMainWindow):
         self.tabs_macro = QTabWidget()
         
         # Tabla Macro 1
+        page_m1 = QWidget()
+        layout_page_m1 = QVBoxLayout(page_m1)
+        layout_page_m1.setContentsMargins(6, 6, 6, 6)
+        
+        top_tab1_layout = QHBoxLayout()
+        lbl_tab1_title = QLabel("<b>Acciones de Macro 1 (F8)</b>")
+        lbl_tab1_title.setStyleSheet("color: #38bdf8;")
+        btn_tab_clear_m1 = QPushButton("🗑 Limpiar esta Macro 1")
+        btn_tab_clear_m1.setStyleSheet("background-color: #7f1d1d; color: #fca5a5; padding: 4px 10px; font-size: 11px;")
+        btn_tab_clear_m1.clicked.connect(self.limpiar_macro1)
+        top_tab1_layout.addWidget(lbl_tab1_title)
+        top_tab1_layout.addStretch()
+        top_tab1_layout.addWidget(btn_tab_clear_m1)
+        
         self.tabla_m1 = QTableWidget()
         self.tabla_m1.setColumnCount(5)
         self.tabla_m1.setHorizontalHeaderLabels(["#", "Tipo de Acción", "Detalle / Tecla", "Coordenadas (X, Y)", "Retardo (s)"])
         self.tabla_m1.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tabs_macro.addTab(self.tabla_m1, "📋 Macro 1 (F8) [0]")
+        
+        layout_page_m1.addLayout(top_tab1_layout)
+        layout_page_m1.addWidget(self.tabla_m1)
+        self.tabs_macro.addTab(page_m1, "📋 Macro 1 (F8) [0]")
 
         # Tabla Macro 2
+        page_m2 = QWidget()
+        layout_page_m2 = QVBoxLayout(page_m2)
+        layout_page_m2.setContentsMargins(6, 6, 6, 6)
+        
+        top_tab2_layout = QHBoxLayout()
+        lbl_tab2_title = QLabel("<b>Acciones de Macro 2 (F1)</b>")
+        lbl_tab2_title.setStyleSheet("color: #c084fc;")
+        btn_tab_clear_m2 = QPushButton("🗑 Limpiar esta Macro 2")
+        btn_tab_clear_m2.setStyleSheet("background-color: #581c87; color: #e9d5ff; padding: 4px 10px; font-size: 11px;")
+        btn_tab_clear_m2.clicked.connect(self.limpiar_macro2)
+        top_tab2_layout.addWidget(lbl_tab2_title)
+        top_tab2_layout.addStretch()
+        top_tab2_layout.addWidget(btn_tab_clear_m2)
+        
         self.tabla_m2 = QTableWidget()
         self.tabla_m2.setColumnCount(5)
         self.tabla_m2.setHorizontalHeaderLabels(["#", "Tipo de Acción", "Detalle / Tecla", "Coordenadas (X, Y)", "Retardo (s)"])
         self.tabla_m2.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tabs_macro.addTab(self.tabla_m2, "🟣 Macro 2 (F1) [0]")
+        
+        layout_page_m2.addLayout(top_tab2_layout)
+        layout_page_m2.addWidget(self.tabla_m2)
+        self.tabs_macro.addTab(page_m2, "🟣 Macro 2 (F1) [0]")
 
         splitter.addWidget(self.tabs_macro)
         splitter.setSizes([340, 660])
@@ -549,6 +672,10 @@ class GrabadorMacrosApp(QMainWindow):
 
     def _actualizar_estado_spin_iteraciones(self, infinito: bool):
         self.spin_iter.setEnabled(not infinito)
+
+    def _actualizar_estado_spin_especial(self, activo: bool):
+        self.spin_intervalo_especial.setEnabled(activo)
+        self.spin_minutos_especial.setEnabled(activo)
 
     def _actualizar_etiqueta_velocidad(self, val: int):
         vel = val / 10.0
@@ -823,6 +950,9 @@ class GrabadorMacrosApp(QMainWindow):
         freq_m2 = self.spin_freq_m2.value()
         retardo_bucle = self.spin_delay_bucle.value()
         vel = self.slider_vel.value() / 10.0
+        activar_especial = self.chk_macro_especial.isChecked()
+        intervalo_especial = self.spin_intervalo_especial.value()
+        minutos_especial = self.spin_minutos_especial.value()
 
         self.lbl_estado.setText("▶ INICIANDO REPRODUCCIÓN... (F4/ESC para detener)")
         self.lbl_estado.setStyleSheet("background-color: #14532d; color: #86efac; border-color: #22c55e;")
@@ -830,7 +960,8 @@ class GrabadorMacrosApp(QMainWindow):
 
         self.hilo_playback = HiloReproduccion(
             self.acciones_macro1, self.acciones_macro2, freq_m2,
-            infinitas, max_iter, retardo_bucle, vel
+            infinitas, max_iter, retardo_bucle, vel,
+            activar_especial, intervalo_especial, minutos_especial
         )
         self.hilo_playback.cambio_macro_ejecutando.connect(self._on_cambio_macro_ejecutando)
         self.hilo_playback.intervencion_requerida.connect(self._on_intervencion_requerida)
@@ -840,9 +971,22 @@ class GrabadorMacrosApp(QMainWindow):
 
     def _on_cambio_macro_ejecutando(self, nombre_macro: str, iteracion: int):
         if not (self.hilo_playback and self.hilo_playback.esperando_intervencion):
-            color_bg = "#14532d" if "1" in nombre_macro else "#581c87"
-            color_text = "#86efac" if "1" in nombre_macro else "#e9d5ff"
-            color_border = "#22c55e" if "1" in nombre_macro else "#a855f7"
+            if "Timer" in nombre_macro or "Espera" in nombre_macro:
+                color_bg = "#7c2d12"
+                color_text = "#fed7aa"
+                color_border = "#f97316"
+            elif "Especial" in nombre_macro:
+                color_bg = "#6b21a8"
+                color_text = "#f5d0fe"
+                color_border = "#c084fc"
+            elif "1" in nombre_macro:
+                color_bg = "#14532d"
+                color_text = "#86efac"
+                color_border = "#22c55e"
+            else:
+                color_bg = "#581c87"
+                color_text = "#e9d5ff"
+                color_border = "#a855f7"
             
             self.lbl_estado.setText(f"▶ REPRODUCIENDO {nombre_macro} | Iteración #{iteracion} (F4/ESC para detener)")
             self.lbl_estado.setStyleSheet(f"background-color: {color_bg}; color: {color_text}; border-color: {color_border};")
@@ -874,12 +1018,30 @@ class GrabadorMacrosApp(QMainWindow):
         if self.reproduciendo:
             self.detener_reproduccion()
 
+    def limpiar_macro1(self):
+        if self.grabando_macro == 1:
+            self.detener_grabacion()
+        elif self.reproduciendo:
+            self.detener_reproduccion()
+        self.acciones_macro1.clear()
+        self.actualizar_tablas()
+        self.lbl_estado.setText("🟢 LISTO (Macro 1 Limpiada)")
+
+    def limpiar_macro2(self):
+        if self.grabando_macro == 2:
+            self.detener_grabacion()
+        elif self.reproduciendo:
+            self.detener_reproduccion()
+        self.acciones_macro2.clear()
+        self.actualizar_tablas()
+        self.lbl_estado.setText("🟢 LISTO (Macro 2 Limpiada)")
+
     def limpiar_macros(self):
         self.detener_todo()
         self.acciones_macro1.clear()
         self.acciones_macro2.clear()
         self.actualizar_tablas()
-        self.lbl_estado.setText("🟢 LISTO (Macros Limpiadas)")
+        self.lbl_estado.setText("🟢 LISTO (Todas las Macros Limpiadas)")
 
     # --- TABLAS Y PERSISTENCIA JSON ---
     def _poblar_tabla(self, tabla: QTableWidget, acciones: List[Dict[str, Any]]):
@@ -925,6 +1087,9 @@ class GrabadorMacrosApp(QMainWindow):
             data = {
                 "version": "2.0",
                 "frecuencia_macro2": self.spin_freq_m2.value(),
+                "activar_macro_especial": self.chk_macro_especial.isChecked(),
+                "intervalo_m2_especial": self.spin_intervalo_especial.value(),
+                "minutos_especial": self.spin_minutos_especial.value(),
                 "total_acciones_macro1": len(self.acciones_macro1),
                 "total_acciones_macro2": len(self.acciones_macro2),
                 "acciones_macro1": self.acciones_macro1,
@@ -945,6 +1110,9 @@ class GrabadorMacrosApp(QMainWindow):
                     self.acciones_macro1 = data.get("acciones_macro1", [])
                     self.acciones_macro2 = data.get("acciones_macro2", [])
                     self.spin_freq_m2.setValue(data.get("frecuencia_macro2", 2))
+                    self.chk_macro_especial.setChecked(data.get("activar_macro_especial", True))
+                    self.spin_intervalo_especial.setValue(data.get("intervalo_m2_especial", 3))
+                    self.spin_minutos_especial.setValue(data.get("minutos_especial", 7))
                 else:
                     self.acciones_macro1 = data.get("acciones", [])
                     self.acciones_macro2 = []
